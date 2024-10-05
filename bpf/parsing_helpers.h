@@ -10,18 +10,22 @@
 #include <linux/ipv6.h>
 #include <netinet/tcp.h>
 
+#include "options.h"
+
+/*
 struct opthdr
 {
 	__u8 kind;
 	__u8 len;
 	__u8 data;
 };
+*/
 
 struct hdr_cursor
 {
 	void *pos;
 };
-
+/*
 struct options_pack
 {
 	__u16 mss;
@@ -31,6 +35,7 @@ struct options_pack
 	__u32 timeout;
 	__u32 echo_timeout;
 };
+*/
 
 struct
 {
@@ -55,7 +60,6 @@ static __always_inline int parse_ethhdr(struct hdr_cursor *h_cur,
 
 	return bpf_htons(eth->h_proto);
 }
-
 static __always_inline int parse_iphdr(struct hdr_cursor *h_cur,
 									   void *data_end,
 									   struct iphdr **iphdr)
@@ -94,6 +98,7 @@ static __always_inline int parse_ip6hdr(struct hdr_cursor *h_cur,
 	return ip6h->nexthdr;
 }
 
+#if 1
 static __always_inline __u8 validate_tcphdr(struct hdr_cursor *h_cur,
 											void *data_end,
 											struct tcphdr **tcphdr)
@@ -114,85 +119,93 @@ static __always_inline __u8 validate_tcphdr(struct hdr_cursor *h_cur,
 
 	return hdrlen;
 }
+#endif
 
+#if 1
 static __always_inline bool is_tcp_syn(struct hdr_cursor *h_cur)
 {
 	struct tcphdr *th = (struct tcphdr *)h_cur->pos;
 	return (th->syn == 1 && th->ack == 0);
 }
+#endif
 
-static __always_inline void parse_options(struct hdr_cursor *h_cur,
-										  __u8 hdrlen,
-										  struct options_pack *op)
+static __always_inline int parse_options(struct hdr_cursor *h_cur,
+										 __u8 hdrlen,
+										 struct options_pack *op)
 {
 	struct opthdr *oh = h_cur->pos;
 
-	while (hdrlen > 0)
-	{
-		h_cur->pos++;
-		bpf_trace_printk("opt: %d", oh->kind);
+	__u8 *optstart = (__u8 *)oh;
+	__u8 optlen = hdrlen - sizeof(struct tcphdr);
+	__u8 *optend = optstart + optlen;
 
+#pragma unroll
+	for (__u8 *optpos = optstart; optpos < optend;)
+	{
 		switch (oh->kind)
 		{
 		case TCPOPT_EOL:
-			return;
+			return 0;
 
 		case TCPOPT_NOP:
-			hdrlen--;
-			continue;
+			optpos++;
+			break;
 
 		case TCPOPT_MAXSEG:
 			if (oh->len != TCPOLEN_MAXSEG)
-				goto parse_error;
-			op->mss = oh->data;
-			continue;
+				return -1;
+			op->mss = *(__u16 *)oh->data;
+			optpos += TCPOLEN_MAXSEG;
+			break;
 
 		case TCPOPT_WINDOW:
 			if (oh->len != TCPOLEN_WINDOW)
-				goto parse_error;
-			op->ws = oh->data;
-			continue;
+				return -1;
+			op->ws = *(oh->data);
+			optpos += TCPOLEN_WINDOW;
+			break;
 
 		case TCPOPT_SACK_PERMITTED:
 			if (oh->len != TCPOLEN_SACK_PERMITTED)
-				goto parse_error;
-			// key only option pass as boolean value
+				return -1;
+			/*
+			 * Key only option pass as boolean value
+			 */
 			op->mss = 1;
-			continue;
+			optpos += TCPOLEN_SACK_PERMITTED;
+			break;
 
 		case TCPOPT_SACK:
-			/* length variable, so check maximum possible value */
-			if (oh->len > 34)
-				goto parse_error;
-			// TODO: process all pointers
-			op->sack[0] = oh->data;
+			/*
+			 * Length is variable, so check if it is a multiple of record size
+			 */
+			if ((oh->len - 2) % 4)
+				return -1;
+			int sackcnt = (oh->len - 2) / 4;
 
-			continue;
+#pragma unroll
+			for (__u8 sc = 0; sc < sackcnt; sc++)
+			{
+				op->sack[sc].begin = *(__u32 *)optpos;
+				optpos += sizeof(struct sack);
+			}
+			break;
 
 		case TCPOPT_TIMESTAMP:
 			if (oh->len != TCPOLEN_TIMESTAMP)
-				goto parse_error;
+				return -1;
 
-			op->timeout = oh->data;
-			op->echo_timeout = (oh + sizeof(__u32))->data;
-			continue;
+			op->timeout.curr = *(__u32 *)oh->data;
+			op->timeout.echo = *(__u32 *)(oh->data + sizeof(__u32));
+			optpos += TCPOLEN_TIMESTAMP;
+			break;
 
 		default:
-			goto parse_error;
-
-			bpf_trace_printk("len: %d", oh->len);
-
-			for (int i = 0; i < oh->len; i++)
-			{
-				bpf_trace_printk("%#02x ", oh->data);
-			}
-
-			h_cur->pos += oh->len;
-			hdrlen -= oh->len;
+			return -1;
 		}
 	}
-parse_error:
-	bpf_printk("Wrong option %#02x len %#02x", oh->kind, oh->len);
+	/* We should not get here*/
+	return -1;
 }
 
 #endif /* __PARSING_HELPERS_H */

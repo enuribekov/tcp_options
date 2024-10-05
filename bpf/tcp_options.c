@@ -24,12 +24,12 @@ int xdp_parser_func(struct xdp_md *ctx)
 	h_cur.pos = data;
 
 	eth_type = parse_ethhdr(&h_cur, data_end, &eth);
-
 	switch (eth_type)
 	{
 	case ETH_P_IP:
 		ip_type = parse_iphdr(&h_cur, data_end, &iphdr);
-		break;
+		break
+;
 	case ETH_P_IPV6:
 		ip_type = parse_ip6hdr(&h_cur, data_end, &ipv6hdr);
 		break;
@@ -42,15 +42,18 @@ int xdp_parser_func(struct xdp_md *ctx)
 
 	tcp_hdr_len = validate_tcphdr(&h_cur, data_end, &tcphdr);
 
-	if ((tcp_hdr_len < 5) || (tcp_hdr_len > 15))
-		return -1;
+
+
+	//if ((tcp_hdr_len < 5) || (tcp_hdr_len > 15))
+	//	return -1;
+
 
 	if (!is_tcp_syn(&h_cur))
 		goto out;
 
 	parse_options(&h_cur, tcp_hdr_len, &op);
 	
-	bpf_map_update_elem(&option_map, &(iphdr->saddr), &op, BPF_ANY);
+	//bpf_map_update_elem(&option_map, &(iphdr->saddr), &op, BPF_ANY);
 
 out:
 	return 0; // placeholder
